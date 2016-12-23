@@ -6,6 +6,7 @@ import (
 	"net"
 	"os/exec"
 
+	"github.com/songgao/packets/ethernet"
 	"github.com/squirrel-land/squirrel/common"
 	"github.com/squirrel-land/water"
 )
@@ -29,6 +30,23 @@ func NewClient(tapName string) (client *Client, err error) {
 	return
 }
 
+func (client *Client) printFrame() {
+	var frame ethernet.Frame
+
+	for {
+		frame.Resize(1500)
+		n, err := client.tap.Read([]byte(frame))
+		if err != nil {
+			log.Fatal(err)
+		}
+		frame = frame[:n]
+		log.Printf("Dst: %s\n", frame.Destination())
+		log.Printf("Src: %s\n", frame.Source())
+		log.Printf("Ethertype: % x\n", frame.Ethertype())
+		log.Printf("Payload: % x\n", frame.Payload())
+	}
+}
+
 func (client *Client) configureTap(joinRsp *common.JoinRsp) (err error) {
 	m, _ := joinRsp.Mask.Size()
 	addr := fmt.Sprintf("%s/%d", joinRsp.Address.String(), m)
@@ -47,6 +65,11 @@ func (client *Client) connect(masterAddr string) (err error) {
 	if err != nil {
 		return
 	}
+	client.link = common.NewLink(connection)
+	if err != nil {
+		return
+	}
+
 	client.link = common.NewLink(connection)
 
 	var ifce *net.Interface
@@ -120,6 +143,7 @@ func (client *Client) Start(masterAddr string) (err error) {
 		return
 	}
 
+	go client.printFrame()
 	go client.tap2master()
 	go client.master2tap()
 

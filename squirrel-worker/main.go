@@ -18,7 +18,7 @@ type config struct {
 func getConfig() (conf config, err error) {
 	endpoint := os.Getenv("SQUIRREL_ENDPOINT")
 	if endpoint == "" {
-		endpoint = "http://127.0.0.1:4001"
+		endpoint = "http://172.31.0.209:2379"
 	}
 	client := etcd.NewClient([]string{endpoint})
 
@@ -55,7 +55,6 @@ func printHelp() {
 
 func main() {
 	log.SetOutput(os.Stdout)
-
 	var (
 		client *Client
 		conf   config

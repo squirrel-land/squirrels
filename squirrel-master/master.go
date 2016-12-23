@@ -5,9 +5,14 @@ import (
 	"log"
 	"net"
 
+	"fmt"
 	"github.com/songgao/packets/ethernet"
 	"github.com/squirrel-land/squirrel"
-	"github.com/squirrel-land/squirrel/common"
+	"github.com/squirrel/common"
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/net/websocket"
+	"net/http"
+	"time"
 )
 
 type client struct {
@@ -15,7 +20,15 @@ type client struct {
 	Addr net.HardwareAddr
 }
 
+type Config struct {
+	KeySeed  string
+	AuthFile string
+	Proxy    string
+}
+
 type Master struct {
+	Users           common.Users
+	fingerprint     string
 	addressPool     *addressPool
 	clients         []*client
 	addrReverse     *addressReverse
@@ -23,15 +36,97 @@ type Master struct {
 
 	mobilityManager squirrel.MobilityManager
 	september       squirrel.September
+	wsServer        websocket.Server
+	httpServer      *common.HTTPServer
+	sshConfig       *ssh.ServerConfig
+	sessions        map[string]*common.User
 }
 
-func NewMaster(network *net.IPNet, mobilityManager squirrel.MobilityManager, september squirrel.September) (master *Master) {
-	master = &Master{addressPool: newAddressPool(network), addrReverse: newAddressReverse(), mobilityManager: mobilityManager, september: september}
+func NewMaster(network *net.IPNet, mobilityManager squirrel.MobilityManager, september squirrel.September, config *Config) (master *Master) {
+	master = &Master{
+		addressPool:     newAddressPool(network),
+		addrReverse:     newAddressReverse(),
+		mobilityManager: mobilityManager,
+		september:       september,
+		wsServer:        websocket.Server{},
+		httpServer:      common.NewHTTPServer(),
+		sessions:        map[string]*common.User{},
+	}
+
+	master.wsServer.Handler = websocket.Handler(master.handleWS)
+	//generate private key (optionally using seed)
+	key, _ := common.GenerateKey(config.KeySeed)
+	//convert into ssh.PrivateKey
+	private, err := ssh.ParsePrivateKey(key)
+	if err != nil {
+		log.Fatal("Failed to parse key")
+	}
+	//fingerprint this key
+	master.fingerprint = common.FingerprintKey(private.PublicKey())
+	//create ssh config
+	master.sshConfig = &ssh.ServerConfig{
+		ServerVersion:    common.ProtocolVersion + "-server",
+		PasswordCallback: master.authUser,
+	}
+	master.sshConfig.AddHostKey(private)
+
 	master.clients = make([]*client, master.addressPool.Capacity()+1, master.addressPool.Capacity()+1)
 	master.positionManager = NewPositionManager(master.addressPool.Capacity()+1, master.addrReverse)
-	master.mobilityManager.Initialize(master.positionManager)
+	//master.mobilityManager.Initialize(master.positionManager)
 	master.september.Initialize(master.positionManager)
 	return
+}
+
+//
+func (master *Master) authUser(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
+	// no auth - allow all
+	if len(master.Users) == 0 {
+		return nil, nil
+	}
+	// authenticate user
+	n := c.User()
+	u, ok := master.Users[n]
+	if !ok || u.Pass != string(pass) {
+		return nil, errors.New("Invalid auth")
+	}
+	//insert session
+	//insert session
+	master.sessions[string(c.SessionID())] = u
+	return nil, nil
+}
+
+func (master *Master) handleWS(ws *websocket.Conn) {
+	// Before use, a handshake must be performed on the incoming net.Conn.
+	sshConn, chans, reqs, err := ssh.NewServerConn(ws, master.sshConfig)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	//wait for request, with timeout
+	var r *ssh.Request
+	select {
+	case r = <-reqs:
+	case <-time.After(10 * time.Second):
+		sshConn.Close()
+		return
+	}
+
+	r.Reply(true, nil)
+
+	go func() {
+		for r := range reqs {
+			switch r.Type {
+			case "ping":
+				r.Reply(true, nil)
+			default:
+				r.Reply(true, nil)
+			}
+		}
+	}()
+
+	go common.ConnectStreams(chans)
+	sshConn.Wait()
+	fmt.Printf("Close")
 }
 
 func (master *Master) clientJoin(identity int, addr net.HardwareAddr, link *common.Link) {
@@ -152,13 +247,27 @@ func (master *Master) frameHandler(myIdentity int) {
 	master.clientLeave(myIdentity, master.clients[myIdentity].Link.IncomingError())
 }
 
+func (master *Master) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	//websockets upgrade AND has chisel prefix
+	if r.Header.Get("Upgrade") == "websocket" &&
+		r.Header.Get("Sec-WebSocket-Protocol") == common.ProtocolVersion {
+		master.wsServer.ServeHTTP(w, r)
+		return
+	}
+	//missing :O
+	w.WriteHeader(404)
+}
+
 func (master *Master) Run(laddr string) (err error) {
 	var (
-		listener net.Listener
 		identity int
+		listener net.Listener
 	)
 
 	listener, err = net.Listen("tcp", laddr)
+
+	//listener, err = master.httpServer.GoListenAndServe(laddr, http.HandlerFunc(master.handleHTTP))
+
 	if err != nil {
 		return
 	}

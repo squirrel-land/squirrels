@@ -28,12 +28,12 @@ type config struct {
 func getConfig() (conf config, err error) {
 	endpoint := os.Getenv("SQUIRREL_ENDPOINT")
 	if endpoint == "" {
-		endpoint = "http://127.0.0.1:4001"
+		endpoint = "http://127.0.0.1:2379"
 	}
 	client := etcd.NewClient([]string{endpoint})
 
 	var ifce string
-	ifce, err = common.GetEtcdValue(client, "/squirrel/master_ifce")
+	ifce = "enp0s25"
 	if err != nil {
 		return
 	}
@@ -54,6 +54,20 @@ func getConfig() (conf config, err error) {
 		return
 	}
 
+	_, err = client.Set("/squirrel/master/emulated_subnet", "10.0.4.0/24", 0)
+	conf.emulatedSubnet, err = common.GetEtcdValue(client, "/squirrel/master/emulated_subnet")
+	if err != nil {
+		return
+	}
+
+	_, err = client.Set("/squirrel/master/StaticUniformPositions.1/spacing", "200", 0)
+
+	_, err = client.Set("/squirrel/master/StaticUniformPositions.1/shape", "Linear", 0)
+
+	_, err = client.Set("/squirrel/master/mobility_manager", "StaticUniformPositions", 0)
+	if err != nil {
+		return
+	}
 	conf.emulatedSubnet, err = common.GetEtcdValue(client, "/squirrel/master/emulated_subnet")
 	if err != nil {
 		return
@@ -85,6 +99,7 @@ func getConfig() (conf config, err error) {
 		conf.mobilityManagerConfig = resp.Node
 	}
 
+	_, err = client.Set("/squirrel/master/september", "September0th", 0)
 	conf.september, err = common.GetEtcdValue(client, "/squirrel/master/september")
 	if err != nil {
 		return
@@ -145,7 +160,7 @@ func getAddr(interfaceName string) (net.IP, error) {
 	return nil, fmt.Errorf("Configured interface (%s) is not found", interfaceName)
 }
 
-func runMaster(conf config) (err error) {
+func runMaster(conf config, config *Config) (err error) {
 	var network *net.IPNet
 	_, network, err = net.ParseCIDR(conf.emulatedSubnet)
 	if err != nil {
@@ -163,12 +178,6 @@ func runMaster(conf config) (err error) {
 		return
 	}
 
-	err = mobilityManager.Configure(conf.mobilityManagerConfig)
-	if err != nil {
-		log.Println("Creating MobilityManager failed. Following message might help:\n")
-		log.Println(mobilityManager.ParametersHelp())
-		return
-	}
 	err = september.Configure(conf.septemberConfig)
 	if err != nil {
 		log.Println("Creating September failed. Following message might help:\n")
@@ -176,7 +185,7 @@ func runMaster(conf config) (err error) {
 		return
 	}
 
-	master := NewMaster(network, mobilityManager, september)
+	master := NewMaster(network, mobilityManager, september, config)
 	return master.Run(conf.uri)
 }
 
@@ -207,6 +216,27 @@ func main() {
 	log.SetOutput(os.Stdout)
 
 	flag.Parse()
+	flags := flag.NewFlagSet("server", flag.ContinueOnError)
+
+	host := flags.String("host", "", "")
+	port := flags.String("port", "", "")
+	key := flags.String("key", "", "")
+	authfile := flags.String("authfile", "", "")
+
+	if *host == "" {
+		*host = os.Getenv("HOST")
+	}
+	if *host == "" {
+		*host = "172.31.0.209"
+	}
+
+	if *port == "" {
+		*port = os.Getenv("PORT")
+	}
+	if *port == "" {
+		*port = "1234"
+	}
+
 	if *cpuprofile != "" {
 		f, err := os.Create(*cpuprofile)
 		if err != nil {
@@ -227,7 +257,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	err = runMaster(conf)
+	err = runMaster(conf, &Config{
+		KeySeed:  *key,
+		AuthFile: *authfile,
+	})
 	if err != nil {
 		log.Println(err)
 		os.Exit(1)
