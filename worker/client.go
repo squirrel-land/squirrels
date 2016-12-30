@@ -1,33 +1,80 @@
-package main
+package worker
 
 import (
 	"fmt"
+	"github.com/overlay/common"
+	"github.com/overlay/packets/ethernet"
+	"github.com/overlay/water"
+	"golang.org/x/net/websocket"
 	"log"
 	"net"
+	"net/url"
 	"os/exec"
-
-	"github.com/songgao/packets/ethernet"
-	"github.com/squirrel-land/squirrel/common"
-	"github.com/squirrel-land/water"
+	"regexp"
+	"strings"
 )
 
+type Config struct {
+	Server string
+}
+
 type Client struct {
-	link *common.Link
-	tap  *water.Interface
+	server string
+	*common.Logger
+	link     *common.Link
+	tap      *water.Interface
+	running  bool
+	runningc chan error
 }
 
 // Create a new client along with a TAP network interface whose name is tapName
-func NewClient(tapName string) (client *Client, err error) {
+func NewClient(tapName string, config *Config) (client *Client, err error) {
+	//apply default scheme
+	if !strings.HasPrefix(config.Server, "http") {
+		config.Server = "http://" + config.Server
+	}
+
+	u, err := url.Parse(config.Server)
+	if err != nil {
+		return nil, err
+	}
+
+	//apply default port
+	if !regexp.MustCompile(`:\d+$`).MatchString(u.Host) {
+		if u.Scheme == "https" || u.Scheme == "wss" {
+			u.Host = u.Host + ":443"
+		} else {
+			u.Host = u.Host + ":8080"
+		}
+	}
+
+	//swap to websockets scheme
+	u.Scheme = strings.Replace(u.Scheme, "http", "ws", 1)
 	var tap *water.Interface
 	tap, err = water.NewTAP(tapName)
 	if err != nil {
 		return nil, err
 	}
 	client = &Client{
-		link: nil,
-		tap:  tap,
+		Logger:   common.NewLogger("client"),
+		server:   u.String(),
+		link:     nil,
+		tap:      tap,
+		running:  true,
+		runningc: make(chan error, 1),
 	}
 	return
+}
+
+//Start then Wait
+func (c *Client) Run() error {
+	go c.start()
+	return c.Wait()
+}
+
+//Wait blocks while the client is running
+func (c *Client) Wait() error {
+	return <-c.runningc
 }
 
 func (client *Client) printFrame() {
@@ -60,35 +107,27 @@ func (client *Client) configureTap(joinRsp *common.JoinRsp) (err error) {
 }
 
 func (client *Client) connect(masterAddr string) (err error) {
-	var connection net.Conn
-	connection, err = net.Dial("tcp", masterAddr)
-	if err != nil {
-		return
-	}
-	client.link = common.NewLink(connection)
-	if err != nil {
-		return
-	}
+	client.Infof("Connecting to %s\n", client.server)
+	connection, err := websocket.Dial(masterAddr, "", "http://localhost/")
 
 	client.link = common.NewLink(connection)
-
 	var ifce *net.Interface
 	ifce, err = net.InterfaceByName(client.tap.Name())
 	err = client.link.SendJoinReq(&common.JoinReq{MACAddr: ifce.HardwareAddr})
 	if err != nil {
-		return
+		client.Infof("Sending joining request failed")
+		client.Debugf(err.Error())
 	}
 	var rsp *common.JoinRsp
 	rsp, err = client.link.GetJoinRsp()
-	if err != nil {
-		return
-	}
 	if rsp.Error != nil {
-		return fmt.Errorf("Join failed: %s", rsp.Error.Error())
+		client.Infof("Join failed")
+		client.Debugf(rsp.Error.Error())
 	}
 	err = client.configureTap(rsp)
 	if err != nil {
-		return
+		client.Infof("Configure Tap failed")
+		client.Debugf(err.Error())
 	}
 	client.link.StartRoutines()
 	return
@@ -137,15 +176,16 @@ func (client *Client) master2tap() {
 // Run the client, and block until all routines exit or any error is ecountered.
 // It connects to a master with address masterAddr, proceeds with JoinReq/JoinRsp process, configures the TAP device, and at last, start routines that carry MAC frames back and forth between the TAP device and the master.
 // masterAddr: should be host:port format where host can be either IP address or hostname/domainName.
-func (client *Client) Start(masterAddr string) (err error) {
-	err = client.connect(masterAddr)
+func (c *Client) start() (err error) {
+	err = c.connect(c.server)
 	if err != nil {
 		return
 	}
 
-	go client.printFrame()
-	go client.tap2master()
-	go client.master2tap()
+	go c.printFrame()
+
+	go c.tap2master()
+	go c.master2tap()
 
 	return
 }

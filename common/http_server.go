@@ -26,11 +26,11 @@ func NewHTTPServer() *HTTPServer {
 	}
 }
 
-func (h *HTTPServer) GoListenAndServe(addr string, handler http.Handler) (net.Listener, error) {
+func (h *HTTPServer) GoListenAndServe(addr string, handler http.Handler) error {
 
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	h.isRunning = true
 	h.Handler = handler
@@ -38,7 +38,7 @@ func (h *HTTPServer) GoListenAndServe(addr string, handler http.Handler) (net.Li
 	go func() {
 		h.closeWith(h.Serve(l))
 	}()
-	return h.listener, nil
+	return nil
 }
 
 func (h *HTTPServer) closeWith(err error) {
