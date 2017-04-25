@@ -1,21 +1,6 @@
-package squirrel
+package common
 
 import "github.com/coreos/go-etcd/etcd"
-
-// MobilityManager controls locations and defines model of mobility of each
-// nodes. Master uses an implementation of MobilityManager interface to
-// simulate the mobility of nodes.
-type MobilityManager interface {
-
-	// ParametersHelp prints help message on how to set parameters
-	ParametersHelp() string
-
-	// Configure configures the mobility manager with a set of parameters.
-	Configure(*etcd.Node) error
-
-	// Initialize sets the PositionManager.
-	Initialize(positionManager PositionManager)
-}
 
 // September is used by Master to make decisions upon packets.
 //
@@ -25,15 +10,8 @@ type MobilityManager interface {
 // Name September is from TV series Fringe http://fringe.wikia.com/wiki/September
 // for his supernatural ability to observe everything and to manipulate (nearly) every object.
 type September interface {
-
-	// ParametersHelp prints help message on how to set parameters
-	ParametersHelp() string
-
-	// Configure configures the mobility manager with a set of parameters.
+	// Configure configures the node manager with a set of parameters.
 	Configure(*etcd.Node) error
-
-	// Initialize sets the PositionManager.
-	Initialize(positionManager PositionManager)
 
 	// SendUnicast is used when a unicast packet as large as size(in bytes) is
 	// sent from source(identity) to destination(identity).
@@ -59,33 +37,10 @@ type September interface {
 	// Any modification to models (interference, etc.) should be done within this
 	// function.
 	SendBroadcast(source int, size int, underlying []int) []int
-}
-
-type Position struct {
-	X      float64
-	Y      float64
-	Height float64
+	Initialize(positionManager PositionManager)
 }
 
 type PositionManager interface {
-	Capacity() int
-
-	// Get returns a copy of Position at given index. Avoid this if possible. It
-	// causes copying Position struct.
-	Get(index int) (Position, error)
-	GetAddr(hardAddr string) (Position, error)
-
-	// Distance calculates Euclidean distance between positions at index1 and
-	// index2.
-	Distance(index1, index2 int) float64
-
-	// SetPosition sets position at index to be pos. It copies X, Y, and Height
-	// values from inside pos into internal slice. pos is left intact and safe to
-	// be changed afterwards.
-	SetPosition(index int, pos *Position) error
-	Set(index int, x, y, height float64) error
-	SetPositionAddr(hardAddr string, pos *Position) (err error)
-	SetAddr(hardAddr string, x, y, height float64) (err error)
 
 	// Enable marks a node as enabled.
 	Enable(index int)

@@ -4,6 +4,7 @@
 *.un~
 Session.vim
 .DS_Store
+.idea
 
-squirrel-worker/squirrel-worker
-squirrel-master/squirrel-master
+worker/squirrel-worker
+master/squirrel-master
